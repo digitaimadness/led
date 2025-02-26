@@ -5,28 +5,41 @@
 
 ### activate powersave thermal throttle mode based on if running on battery🔋 or boost mode if 🎮 [FeralInteractive/gamemode](https://github.com/FeralInteractive/gamemode) is activated and running on charger🔌
 
-#### Requires [hackbnw/faustus](https://github.com/hackbnw/faustus) driver to be installed and functioning! If your Asus TUF laptop is unsupported by the driver try building dkms module anyway and put following to your kernel parameters🫠, worked for me!
+#### Requirements
+
+1. [hackbnw/faustus](https://github.com/hackbnw/faustus) driver must be installed and functioning! If your Asus TUF laptop is unsupported by the driver try building dkms module anyway and put following to your kernel parameters🫠, worked for me!
 ```
 faustus.let_it_burn=1
 ```
 
-### 🔨installation🔧
+2. Python dependencies:
+```bash
+pip install -r requirements.txt
 ```
+
+### 🔨installation🔧
+```bash
+# Clone the repository
 git clone https://github.com/digitaimadness/tuf-utils /tmp/tuf-utils
-cd /tmp/tuf-utils  
+cd /tmp/tuf-utils
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Build and install
 python setup.py build_ext --inplace
 sudo mkdir /opt/tuf-utils
-sudo mv tufutils.pyx tufutilsstarter.py tufutils.cpython-310-x86_64-linux-gnu.so /opt/tuf-utils
-sudo mv tuf-rgb-cpu.service /etc/systemd/system
+sudo mv tufutils.pyx tufutilsstarter.py tufutils.cpython-*-linux-gnu.so /opt/tuf-utils
+sudo mv tuf-utils.service /etc/systemd/system
+```
 
-```
 ### ✨usage✨
-```
-sudo systemctl start tuf-rgb-cpu.service  
-sudo systemctl stop tuf-rgb-cpu.service  
+```bash
+sudo systemctl start tuf-utils.service
+sudo systemctl stop tuf-utils.service
 ```
 
 ### 🌄autostart🌄
-```
-sudo systemctl enable tuf-rgb-cpu.service  
+```bash
+sudo systemctl enable tuf-utils.service
 ```
