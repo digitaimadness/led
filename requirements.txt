@@ -1,0 +1,2 @@
+Cython>=0.29.0
+ProcessMappingScanner>=1.0.0
