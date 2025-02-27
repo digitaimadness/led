@@ -19,12 +19,44 @@ KBBL_PATHS = {
     'apply': f'{KBBL_BASE_PATH}/apply'
 }
 
+# Fan control settings
+FAN_CONTROL_PATH = f'{FAUSTUS_BASE_PATH}/fan_boost_mode'
+FAN_MODES = {
+    'normal': 0,    # Default fan curve
+    'boost': 1,     # Maximum fan speed
+    'silent': 2     # Quiet operation
+}
+FAN_TEMP_THRESHOLD = 75  # Temperature threshold for auto fan boost (°C)
+FAN_UPDATE_INTERVAL = 2.0  # Fan speed update interval
+
+# Power profile settings
+POWER_PROFILE_PATH = f'{FAUSTUS_BASE_PATH}/power_profile'
+POWER_PROFILES = {
+    'balanced': 0,    # Balance performance and power
+    'performance': 1, # Maximum performance
+    'powersave': 2   # Maximum battery life
+}
+
+# GPU power settings
+GPU_POWER_PATH = f'{FAUSTUS_BASE_PATH}/gpu_power'
+GPU_MODES = {
+    'eco': 0,      # Power-saving mode
+    'standard': 1, # Normal operation
+    'boost': 2     # Maximum performance
+}
+
 # Thermal throttle settings
 THROTTLE_POLICY_PATH = f'{FAUSTUS_BASE_PATH}/throttle_thermal_policy'
 THROTTLE_POLICIES = {
     'normal': 0,
     'boost': 1,
     'silent': 2
+}
+
+# Temperature monitoring
+TEMP_PATHS = {
+    'cpu': '/sys/class/thermal/thermal_zone0/temp',
+    'gpu': '/sys/class/thermal/thermal_zone1/temp'
 }
 
 # File permissions
