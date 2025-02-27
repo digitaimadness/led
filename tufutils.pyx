@@ -6,12 +6,16 @@ This module provides functionality to:
 """
 
 import cython
-from time import sleep
+from time import sleep, time
 from os import system, path, chmod
 from ProcessMappingScanner import scanAllProcessesForMapping
 from multiprocessing import Process
 import logging
-from typing import Optional, List, Dict
+from typing import Optional, Dict, TextIO
+from contextlib import contextmanager
+import aiofiles
+import asyncio
+from functools import lru_cache, List, Dict
 import signal
 from functools import wraps
 from time import time
@@ -49,6 +53,11 @@ def retry_with_backoff(max_retries: int = 3, initial_delay: float = 1.0):
 @cython.cclass
 class utils:
     """Main utility class for Asus TUF laptop controls."""
+    
+    # File descriptor cache
+    _file_descriptors: Dict[str, TextIO]
+    _last_cpu_stats: Dict[str, float]
+    _last_cpu_time: float
     
     # Process tracking
     _processes: Dict[str, Process]
@@ -226,48 +235,70 @@ class utils:
             logger.error(f"Failed to commit LED changes: {str(e)}")
     
     @cython.ccall
-    def controlkeyboardled(self) -> None:
+    @lru_cache(maxsize=1)
+    def _calculate_cpu_utilization(self) -> int:
+        """Calculate CPU utilization with caching.
+        
+        Returns:
+            int: CPU utilization percentage
+        """
+        try:
+            current_time = time()
+            # Only update if enough time has passed
+            if current_time - self._last_cpu_time >= 0.5:
+                with self._get_cached_file('/proc/stat') as f:
+                    fields = [float(column) for column in f.readline().strip().split()[1:]]
+                idle, total = fields[3], sum(fields)
+                
+                if self._last_cpu_stats:
+                    idle_delta = idle - self._last_cpu_stats['idle']
+                    total_delta = total - self._last_cpu_stats['total']
+                    utilization = int((1.0 - idle_delta/total_delta) * 100.0)
+                else:
+                    utilization = 0
+                
+                self._last_cpu_stats = {'idle': idle, 'total': total}
+                self._last_cpu_time = current_time
+                
+                return utilization
+            else:
+                # Return last calculated value if not enough time has passed
+                return int((1.0 - (self._last_cpu_stats.get('idle_delta', 0) / 
+                                  self._last_cpu_stats.get('total_delta', 1))) * 100.0)
+        except Exception as e:
+            logger.error(f"Error calculating CPU utilization: {str(e)}")
+            return 0
+    
+    @cython.ccall
+    async def controlkeyboardled(self) -> None:
         """Control keyboard LED based on CPU and GPU utilization."""
         is2tick = False
         while True:
             try:
-                # Get CPU utilization
-                with open('/proc/stat', 'r') as f:
-                    fields = [float(column) for column in f.readline().strip().split()[1:]]
-                idle, total = fields[3], sum(fields)
-                cpu_total = total
-                cpu_idle = idle
-
-                sleep(0.5)
-
-                with open('/proc/stat', 'r') as f:
-                    fields = [float(column) for column in f.readline().strip().split()[1:]]
-                idle, total = fields[3], sum(fields)
-                
-                cpu_total_delta = total - cpu_total
-                cpu_idle_delta = idle - cpu_idle
-                cpu_utilization = int((1.0 - cpu_idle_delta/cpu_total_delta) * 100.0)
-                
-                # Get GPU utilization
-                gpuutilization = self.readgpuutilization()
+                # Get CPU and GPU utilization
+                cpu_utilization = self._calculate_cpu_utilization()
+                gpuutilization = await self.readgpuutilization_async()
                 
                 # Calculate brightness coefficient
-                brightnesscoef = 1
-                if is2tick:
-                    brightnesscoef = 0.8
+                brightnesscoef = 0.8 if is2tick else 1.0
                 
                 # Set LED colors based on utilization
-                self.setled("red", brightnesscoef * cpu_utilization)
-                self.setled("green", brightnesscoef * gpuutilization)
-                self.setled("blue", brightnesscoef * (255 - max(cpu_utilization, gpuutilization)))
-                self.commitled()
+                await asyncio.gather(
+                    self._write_to_file_async("/sys/devices/platform/faustus/kbbl/red", 
+                                              str(int(brightnesscoef * cpu_utilization))),
+                    self._write_to_file_async("/sys/devices/platform/faustus/kbbl/green", 
+                                              str(int(brightnesscoef * gpuutilization))),
+                    self._write_to_file_async("/sys/devices/platform/faustus/kbbl/blue", 
+                                              str(int(brightnesscoef * (255 - max(cpu_utilization, gpuutilization)))))
+                )
+                await self._write_to_file_async("/sys/devices/platform/faustus/kbbl/apply", "1")
                 
                 is2tick = not is2tick
-                sleep(1 if self.isonbattery() else 0.1)
+                await asyncio.sleep(1 if self.isonbattery() else 0.1)
                 
             except Exception as e:
                 logger.error(f"Error in keyboard LED control: {str(e)}")
-                sleep(5)  # Wait before retrying
+                await asyncio.sleep(5)  # Wait before retrying
     
     @cython.ccall
     def controlthermalthrottle(self) -> None:
