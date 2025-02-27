@@ -14,10 +14,12 @@ from config import (
     GAMEMODE_PERMISSIONS,
     BATTERY_POLL_INTERVAL,
     CHARGER_POLL_INTERVAL,
-    PROCESS_MONITOR_INTERVAL
+    PROCESS_MONITOR_INTERVAL,
+    FAN_UPDATE_INTERVAL
 )
 from services.keyboard import KeyboardService
 from services.thermal import ThermalService
+from services.power import PowerService
 
 logger = logging.getLogger('TUFUtils')
 
@@ -27,15 +29,19 @@ class TUFUtils:
     
     _keyboard_service: KeyboardService
     _thermal_service: ThermalService
+    _power_service: PowerService
     _processes: Dict[str, Process]
     _running: cython.bint
+    _performance_mode: cython.bint
     
     def __init__(self):
         """Initialize TUF utilities."""
         self._keyboard_service = KeyboardService()
         self._thermal_service = ThermalService()
+        self._power_service = PowerService()
         self._processes = {}
         self._running = True
+        self._performance_mode = False
         self._setup_signal_handlers()
         self._initialize_gamemode()
     
@@ -102,12 +108,35 @@ class TUFUtils:
             finally:
                 asyncio.sleep(BATTERY_POLL_INTERVAL)
     
+    def _control_power(self):
+        """Control power and fan settings."""
+        while self._running:
+            try:
+                on_battery = self._thermal_service.is_on_battery()
+                self._power_service.optimize_power_settings(on_battery, self._performance_mode)
+            except Exception as e:
+                logger.error(f"Error in power control: {str(e)}")
+            finally:
+                asyncio.sleep(FAN_UPDATE_INTERVAL)
+    
+    def set_performance_mode(self, enabled: bool):
+        """Enable or disable performance mode."""
+        try:
+            self._performance_mode = enabled
+            on_battery = self._thermal_service.is_on_battery()
+            self._power_service.optimize_power_settings(on_battery, enabled)
+            logger.info(f"Performance mode {'enabled' if enabled else 'disabled'}")
+        except Exception as e:
+            logger.error(f"Failed to set performance mode: {str(e)}")
+    
     def start(self):
         """Start all control processes."""
         try:
             # Start process monitoring
             Process(target=self._monitor_process, args=("keyboard", self._control_keyboard_led)).start()
             Process(target=self._monitor_process, args=("thermal", self._control_thermal)).start()
+            Process(target=self._monitor_process, args=("power", self._control_power)).start()
+            Process(target=self._monitor_process, args=("fan", self._power_service.auto_fan_control)).start()
             logger.info("TUF utilities started successfully")
         except Exception as e:
             logger.error(f"Failed to start TUF utilities: {str(e)}")
@@ -122,4 +151,5 @@ class TUFUtils:
             process.join()
         self._keyboard_service.cleanup()
         self._thermal_service.cleanup()
+        self._power_service.cleanup()
         logger.info("TUF utilities cleaned up successfully")
