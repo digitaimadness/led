@@ -11,7 +11,10 @@ from os import system, path, chmod
 from ProcessMappingScanner import scanAllProcessesForMapping
 from multiprocessing import Process
 import logging
-from typing import Optional
+from typing import Optional, List, Dict
+import signal
+from functools import wraps
+from time import time
 
 # Configure logging
 logging.basicConfig(
@@ -20,9 +23,36 @@ logging.basicConfig(
 )
 logger = logging.getLogger('TUFUtils')
 
+def retry_with_backoff(max_retries: int = 3, initial_delay: float = 1.0):
+    """Decorator for retrying operations with exponential backoff.
+    
+    Args:
+        max_retries: Maximum number of retry attempts
+        initial_delay: Initial delay between retries in seconds
+    """
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            delay = initial_delay
+            for retry in range(max_retries):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    if retry == max_retries - 1:
+                        raise
+                    logger.warning(f"Retrying {func.__name__} after error: {str(e)}")
+                    sleep(delay)
+                    delay *= 2
+        return wrapper
+    return decorator
+
 @cython.cclass
 class utils:
     """Main utility class for Asus TUF laptop controls."""
+    
+    # Process tracking
+    _processes: Dict[str, Process]
+    _shutting_down: cython.bint
     
     def __init__(self) -> cython.int:
         """Initialize the utilities and set up initial states.
@@ -31,6 +61,14 @@ class utils:
             int: 0 on success, -1 on failure
         """
         try:
+            # Initialize process tracking
+            self._processes = {}
+            self._shutting_down = False
+            
+            # Set up signal handlers
+            signal.signal(signal.SIGTERM, self._handle_shutdown)
+            signal.signal(signal.SIGINT, self._handle_shutdown)
+            
             # Initialize keyboard backlight
             self._write_to_file('/sys/devices/platform/faustus/kbbl/kbbl_mode', "0")
             self._write_to_file('/sys/devices/platform/faustus/kbbl/kbbl_speed', "0")
@@ -49,8 +87,9 @@ class utils:
             return -1
     
     @cython.cfunc
+    @retry_with_backoff(max_retries=3, initial_delay=1.0)
     def _write_to_file(self, filepath: str, content: str) -> None:
-        """Write content to a file with error handling.
+        """Write content to a file with error handling and retry.
         
         Args:
             filepath: Path to the file
@@ -64,8 +103,9 @@ class utils:
             raise
     
     @cython.cfunc
+    @retry_with_backoff(max_retries=3, initial_delay=1.0)
     def _read_from_file(self, filepath: str) -> str:
-        """Read content from a file with error handling.
+        """Read content from a file with error handling and retry.
         
         Args:
             filepath: Path to the file
@@ -259,6 +299,39 @@ class utils:
                 logger.error(f"Error in thermal throttle control: {str(e)}")
                 sleep(5)  # Wait before retrying
     
+    def _handle_shutdown(self, signum: int, frame) -> None:
+        """Handle shutdown signals gracefully.
+        
+        Args:
+            signum: Signal number
+            frame: Current stack frame
+        """
+        logger.info(f"Received shutdown signal {signum}, stopping processes...")
+        self._shutting_down = True
+        for name, process in self._processes.items():
+            logger.info(f"Terminating {name} process...")
+            process.terminate()
+            process.join(timeout=5)
+            if process.is_alive():
+                logger.warning(f"{name} process did not terminate gracefully, killing...")
+                process.kill()
+        logger.info("All processes stopped")
+        exit(0)
+    
+    def _monitor_processes(self) -> None:
+        """Monitor and restart processes if they die unexpectedly."""
+        while not self._shutting_down:
+            for name, process in self._processes.items():
+                if not process.is_alive() and not self._shutting_down:
+                    logger.warning(f"{name} process died, restarting...")
+                    new_process = Process(
+                        target=getattr(self, name.lower()),
+                        name=name
+                    )
+                    new_process.start()
+                    self._processes[name] = new_process
+            sleep(5)
+    
     @cython.ccall
     def main(self) -> None:
         """Start the main control processes."""
@@ -268,8 +341,32 @@ class utils:
             logger.warning("Running in interpreted mode - performance may be reduced")
         
         try:
-            Process(target=self.controlthermalthrottle).start()
-            Process(target=self.controlkeyboardled).start()
-            logger.info("Control processes started successfully")
+            # Start control processes
+            self._processes["ThermalThrottle"] = Process(
+                target=self.controlthermalthrottle,
+                name="ThermalThrottle"
+            )
+            self._processes["KeyboardLED"] = Process(
+                target=self.controlkeyboardled,
+                name="KeyboardLED"
+            )
+            
+            # Start process monitor
+            monitor_process = Process(
+                target=self._monitor_processes,
+                name="ProcessMonitor"
+            )
+            
+            # Start all processes
+            for name, process in self._processes.items():
+                process.start()
+                logger.info(f"{name} process started")
+            
+            monitor_process.start()
+            logger.info("Process monitor started")
+            
+            # Wait for processes
+            monitor_process.join()
+            
         except Exception as e:
             logger.error(f"Failed to start control processes: {str(e)}")
